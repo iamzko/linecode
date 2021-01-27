@@ -6,6 +6,7 @@
 #include <thread>
 #include <QtDebug>
 #include <QThread>
+#include <QTime>
 
 #include <iostream>
 #include <opencv2/opencv.hpp>
@@ -18,7 +19,7 @@
 #include <zbar.h>
 
 
-//#define IMSHOW
+#define IMSHOW
 
 const QString temp_pic_path = "./temp_pic";
 
@@ -184,20 +185,22 @@ void MainWindow::on_pushButton_clicked()
 void MainWindow::deal_pic()
 {
     ui->label_2->clear();
+    QStringList fileNames;
+
+#if 0
     QFileDialog *fileDialog = new QFileDialog();
     //定义文件对话框标题
     fileDialog->setWindowTitle(QFileDialog::tr("打开文件"));
     //设置默认文件路径
     fileDialog->setDirectory(".");
     //设置文件过滤器
-    fileDialog->setNameFilter(QFileDialog::tr("Images(*.png *.jpg *.jpeg *.bmp)"));
+    fileDialog->setNameFilter(QFileDialog::tr("Images(*.png *.jpg *.jpeg *.bmp *.tif)"));
     //    fileDialog->setNameFilter(tr("text(*.txt)"));
     //设置可以选择多个文件,默认为只能选择一个文件QFileDialog::ExistingFiles
     fileDialog->setFileMode(QFileDialog::ExistingFiles);
     //设置视图模式
     fileDialog->setViewMode(QFileDialog::Detail);
     //获取选中文件路径
-    QStringList fileNames;
     if (fileDialog->exec())
     {
         fileNames = fileDialog->selectedFiles();
@@ -206,279 +209,337 @@ void MainWindow::deal_pic()
     {
         return;
     }
-    qDebug("%s",fileNames.at(0).toLocal8Bit().data());
-    cv::Mat image,imageGray,imageGuussian;
-    cv::Mat imageSobelX,imageSobelY,imageSobelOut;
-
-    auto cv_str = cv::String(fileNames.first().toUtf8().data());
-    qDebug("%s",cv_str.c_str());
-    image=cv::imread(cv_str);
-#ifdef IMSHOW
-    imshow(QString::fromUtf8("0.原图像").toLocal8Bit().data(),image);
-#endif
-
-    //1. 原图像大小调整，提高运算效率
-//    cv::resize(image,image,cv::Size(500,300));
-#ifdef IMSHOW
-
-    imshow(QString::fromUtf8("1.原图像").toLocal8Bit().data(),image);
-#endif
-    //2. 转化为灰度图
-    cvtColor(image,imageGray,CV_RGB2GRAY);
-#ifdef IMSHOW
-
-    imshow(QString::fromUtf8("2.灰度图").toLocal8Bit().data(),imageGray);
-#endif
-    //3. 高斯平滑滤波
-    GaussianBlur(imageGray,imageGuussian,cv::Size(3,3),0);
-#ifdef IMSHOW
-
-    imshow(QString::fromUtf8("3.高斯平衡滤波").toLocal8Bit().data(),imageGuussian);
-#endif
-    //4.求得水平和垂直方向灰度图像的梯度差,使用Sobel算子
-    cv::Mat imageX16S,imageY16S;
-    Sobel(imageGuussian,imageX16S,CV_16S,1,0,3,1,0,4);
-    Sobel(imageGuussian,imageY16S,CV_16S,0,1,3,1,0,4);
-    convertScaleAbs(imageX16S,imageSobelX,1,0);
-    convertScaleAbs(imageY16S,imageSobelY,1,0);
-    imageSobelOut=imageSobelX-imageSobelY;
-#ifdef IMSHOW
-
-    imshow(QString::fromUtf8("4.X方向梯度").toLocal8Bit().data(),imageSobelX);
-    imshow(QString::fromUtf8("4.Y方向梯度").toLocal8Bit().data(),imageSobelY);
-    imshow(QString::fromUtf8("4.XY方向梯度差").toLocal8Bit().data(),imageSobelOut);
-#endif
-    //5.均值滤波，消除高频噪声
-    blur(imageSobelOut,imageSobelOut,cv::Size(3,3));
-#ifdef IMSHOW
-
-    imshow(QString::fromUtf8("5.均值滤波").toLocal8Bit().data(),imageSobelOut);
-    #endif
-
-    //6.二值化
-    cv::Mat imageSobleOutThreshold;
-    threshold(imageSobelOut,imageSobleOutThreshold,100,255,CV_THRESH_BINARY);
-#ifdef IMSHOW
-
-    imshow(QString::fromUtf8("6.二值化").toLocal8Bit().data(),imageSobleOutThreshold);
-    #endif
-
-
-
-
-
-    //7.闭运算，填充条形码间隙
-    cv::Mat  element=getStructuringElement(0,cv::Size(7,7));
-    morphologyEx(imageSobleOutThreshold,imageSobleOutThreshold,cv::MORPH_CLOSE,element);
-#ifdef IMSHOW
-
-    imshow(QString::fromUtf8("7.闭运算").toLocal8Bit().data(),imageSobleOutThreshold);
-#endif
-    //8. 腐蚀，去除孤立的点
-    erode(imageSobleOutThreshold,imageSobleOutThreshold,element);
-#ifdef IMSHOW
-
-    imshow(QString::fromUtf8("8.腐蚀").toLocal8Bit().data(),imageSobleOutThreshold);
-#endif
-
-    //9. 膨胀，填充条形码间空隙，根据核的大小，有可能需要2~3次膨胀操作
-    dilate(imageSobleOutThreshold,imageSobleOutThreshold,element);
-    dilate(imageSobleOutThreshold,imageSobleOutThreshold,element);
-    dilate(imageSobleOutThreshold,imageSobleOutThreshold,element);
-    dilate(imageSobleOutThreshold,imageSobleOutThreshold,element);
-#ifdef IMSHOW
-
-    imshow(QString::fromUtf8("9.膨胀").toLocal8Bit().data(),imageSobleOutThreshold);
-#endif
-
-
-    std::vector<std::vector<cv::Point>> contours3;
-    std::vector<cv::Vec4i> hiera;
-    std::vector<std::vector<cv::Point> > contours;
-    std::vector<cv::Rect> boundRect(contours.size());
-    //注意第5个参数为CV_RETR_EXTERNAL，只检索外框
-    findContours(imageSobleOutThreshold, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE); //找轮廓
-    std::cout << contours.size() << std::endl;
-    for (auto i = 0; i < contours.size(); ++i)
+#else
+    fileNames = QFileDialog::getOpenFileNames(this, tr(u8"选择图像"), "", tr("Images(*.png *.jpg *.jpeg *.bmp *.tif)"));
+    if (fileNames.isEmpty())
     {
-        //需要获取的坐标
-        cv::Point2f rectpoint[4];
-        //取得最小外接矩形
-        auto rect =cv::minAreaRect(cv::Mat(contours[i]));
-        //获取4个顶点坐标
-        rect.points(rectpoint);
-        qDebug("point1:%f,%f,point2:%f,%f,point3:%f,%f,point4:%f,%f,continue!",rectpoint[0].x,rectpoint[0].y,rectpoint[1].x,rectpoint[1].y,rectpoint[2].x,rectpoint[2].y,rectpoint[3].x,rectpoint[3].y);
-        cv::Mat test_image = imageSobleOutThreshold.clone();
-        for (int i = 0; i < 4; i++)
-            line(test_image, rectpoint[i], rectpoint[(i+1)%4], cv::Scalar(255,0,255), 2);
-#ifdef IMSHOW
-
-        imshow("9.1test_image",test_image);
+        QMessageBox::critical(this, u8"错误", u8"未选中图像文件", u8"确定");
+        return;
+    }
 #endif
-        //与水平线的角度
-        float angle = rect.angle;
+    QFileInfo temp_dir(fileNames[0]);
+    auto the_path = temp_dir.absolutePath();
+    qDebug() <<"absolutepath"<< the_path;
+    auto the_log_file_path = the_path +"/" +"result.txt";
+    QFile log_file(the_log_file_path);
+    log_file.open(QIODevice::WriteOnly);
 
-        int line1 = sqrt((rectpoint[1].y - rectpoint[0].y)*(rectpoint[1].y - rectpoint[0].y) + (rectpoint[1].x - rectpoint[0].x)*(rectpoint[1].x - rectpoint[0].x));
-        int line2 = sqrt((rectpoint[3].y - rectpoint[0].y)*(rectpoint[3].y - rectpoint[0].y) + (rectpoint[3].x - rectpoint[0].x)*(rectpoint[3].x - rectpoint[0].x));
-        rectangle(imageSobleOutThreshold, rectpoint[0], rectpoint[3], cv::Scalar(255), 2);
-        //面积太小的直接pass
-        if (line1 * line2 < 600)
+
+    foreach(auto &file,fileNames)
+    {
+        QTime timer;
+        timer.start();
+        QFileInfo each_file_info(file);
+
+        qDebug("%s",file.toLocal8Bit().data());
+        cv::Mat image,imageGray,imageGuussian;
+        cv::Mat imageSobelX,imageSobelY,imageSobelOut;
+
+        auto cv_str = cv::String(file.toUtf8().data());
+        qDebug("%s",cv_str.c_str());
+        image=cv::imread(cv_str);
+        if(image.empty())
         {
-            qDebug("line1:%d,line2:%d,continue!",line1,line2);
-            continue;
+            QMessageBox::critical(this,"warning","open pic failed!");
+            return;
         }
+    #ifdef IMSHOW
+        imshow(QString::fromUtf8("0.原图像").toLocal8Bit().data(),image);
+    #endif
 
-        //为了让正方形横着放，所以旋转角度是不一样的。竖放的，给他加90度，翻过来
-        if (line1 > line2)
+        //1. 原图像大小调整，提高运算效率
+//        cv::resize(image,image,cv::Size(image.cols/2,image.rows/2));
+    #ifdef IMSHOW
+
+        imshow(QString::fromUtf8("1.原图像").toLocal8Bit().data(),image);
+    #endif
+        //2. 转化为灰度图
+        cvtColor(image,imageGray,CV_RGB2GRAY);
+    #ifdef IMSHOW
+
+        imshow(QString::fromUtf8("2.灰度图").toLocal8Bit().data(),imageGray);
+    #endif
+        //3. 高斯平滑滤波
+        GaussianBlur(imageGray,imageGuussian,cv::Size(3,3),0);
+    #ifdef IMSHOW
+
+        imshow(QString::fromUtf8("3.高斯平衡滤波").toLocal8Bit().data(),imageGuussian);
+    #endif
+        //4.求得水平和垂直方向灰度图像的梯度差,使用Sobel算子
+        cv::Mat imageX16S,imageY16S;
+        Sobel(imageGuussian,imageX16S,CV_16S,1,0,3,1,0,4);
+        Sobel(imageGuussian,imageY16S,CV_16S,0,1,3,1,0,4);
+        convertScaleAbs(imageX16S,imageSobelX,1,0);
+        convertScaleAbs(imageY16S,imageSobelY,1,0);
+        imageSobelOut=imageSobelX-imageSobelY;
+    #ifdef IMSHOW
+
+        imshow(QString::fromUtf8("4.X方向梯度").toLocal8Bit().data(),imageSobelX);
+        imshow(QString::fromUtf8("4.Y方向梯度").toLocal8Bit().data(),imageSobelY);
+        imshow(QString::fromUtf8("4.XY方向梯度差").toLocal8Bit().data(),imageSobelOut);
+    #endif
+        //5.均值滤波，消除高频噪声
+        blur(imageSobelOut,imageSobelOut,cv::Size(3,3));
+    #ifdef IMSHOW
+
+        imshow(QString::fromUtf8("5.均值滤波").toLocal8Bit().data(),imageSobelOut);
+        #endif
+
+        //6.二值化
+        cv::Mat imageSobleOutThreshold;
+        threshold(imageSobelOut,imageSobleOutThreshold,100,255,CV_THRESH_BINARY);
+    #ifdef IMSHOW
+
+        imshow(QString::fromUtf8("6.二值化").toLocal8Bit().data(),imageSobleOutThreshold);
+        #endif
+
+
+
+
+
+        //7.闭运算，填充条形码间隙
+        cv::Mat  element=getStructuringElement(0,cv::Size(7,7));
+        morphologyEx(imageSobleOutThreshold,imageSobleOutThreshold,cv::MORPH_CLOSE,element);
+    #ifdef IMSHOW
+
+        imshow(QString::fromUtf8("7.闭运算").toLocal8Bit().data(),imageSobleOutThreshold);
+    #endif
+        //8. 腐蚀，去除孤立的点
+        erode(imageSobleOutThreshold,imageSobleOutThreshold,element);
+    #ifdef IMSHOW
+
+        imshow(QString::fromUtf8("8.腐蚀").toLocal8Bit().data(),imageSobleOutThreshold);
+    #endif
+
+        //9. 膨胀，填充条形码间空隙，根据核的大小，有可能需要2~3次膨胀操作
+        dilate(imageSobleOutThreshold,imageSobleOutThreshold,element);
+        dilate(imageSobleOutThreshold,imageSobleOutThreshold,element);
+        dilate(imageSobleOutThreshold,imageSobleOutThreshold,element);
+        dilate(imageSobleOutThreshold,imageSobleOutThreshold,element);
+    #ifdef IMSHOW
+
+        imshow(QString::fromUtf8("9.膨胀").toLocal8Bit().data(),imageSobleOutThreshold);
+    #endif
+
+
+        std::vector<std::vector<cv::Point>> contours3;
+        std::vector<cv::Vec4i> hiera;
+        std::vector<std::vector<cv::Point> > contours;
+        std::vector<cv::Rect> boundRect(contours.size());
+        //注意第5个参数为CV_RETR_EXTERNAL，只检索外框
+        findContours(imageSobleOutThreshold, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE); //找轮廓
+        qDebug() << contours.size();
+        for (auto i = 0; i < contours.size(); ++i)
         {
-            angle = 90 + angle;
-        }
+            //需要获取的坐标
+            cv::Point2f rectpoint[4];
+            //取得最小外接矩形
+            auto rect =cv::minAreaRect(cv::Mat(contours[i]));
+            //获取4个顶点坐标
+            rect.points(rectpoint);
+            qDebug("point1:%f,%f,point2:%f,%f,point3:%f,%f,point4:%f,%f,continue!",rectpoint[0].x,rectpoint[0].y,rectpoint[1].x,rectpoint[1].y,rectpoint[2].x,rectpoint[2].y,rectpoint[3].x,rectpoint[3].y);
+            cv::Mat test_image = imageSobleOutThreshold.clone();
+            for (int i = 0; i < 4; i++)
+                line(test_image, rectpoint[i], rectpoint[(i+1)%4], cv::Scalar(255,0,255), 2);
+    #ifdef IMSHOW
 
-        //新建一个感兴趣的区域图，大小跟原图一样大
-        cv::Mat RoiSrcImg(image.rows, image.cols, CV_8UC3); //注意这里必须选CV_8UC3
-        RoiSrcImg.setTo(255); //颜色都设置为黑色
-        //imshow("新建的ROI", RoiSrcImg);
-        //对得到的轮廓填充一下
-        drawContours(imageSobleOutThreshold, contours, -1, cv::Scalar(255),-1);
+            imshow("9.1test_image",test_image);
+    #endif
+            //与水平线的角度
+            float angle = rect.angle;
 
-        //抠图到RoiSrcImg
-        image.copyTo(RoiSrcImg, imageSobleOutThreshold);
+            int line1 = sqrt((rectpoint[1].y - rectpoint[0].y)*(rectpoint[1].y - rectpoint[0].y) + (rectpoint[1].x - rectpoint[0].x)*(rectpoint[1].x - rectpoint[0].x));
+            int line2 = sqrt((rectpoint[3].y - rectpoint[0].y)*(rectpoint[3].y - rectpoint[0].y) + (rectpoint[3].x - rectpoint[0].x)*(rectpoint[3].x - rectpoint[0].x));
+            rectangle(imageSobleOutThreshold, rectpoint[0], rectpoint[3], cv::Scalar(255), 2);
+            //面积太小的直接pass
+            if (line1 * line2 < 22000)
+            {
+                qDebug("line1:%d,line2:%d,continue!",line1,line2);
+                continue;
+            }
+
+            //为了让正方形横着放，所以旋转角度是不一样的。竖放的，给他加90度，翻过来
+            if (line1 > line2)
+            {
+                angle = 90 + angle;
+            }
+
+            //新建一个感兴趣的区域图，大小跟原图一样大
+            cv::Mat RoiSrcImg(image.rows, image.cols, CV_8UC3); //注意这里必须选CV_8UC3
+            RoiSrcImg.setTo(255); //颜色都设置为黑色
+            //imshow("新建的ROI", RoiSrcImg);
+            //对得到的轮廓填充一下
+            drawContours(imageSobleOutThreshold, contours, -1, cv::Scalar(255),-1);
+
+            //抠图到RoiSrcImg
+            image.copyTo(RoiSrcImg, imageSobleOutThreshold);
 
 
-        //再显示一下看看，除了感兴趣的区域，其他部分都是黑色的了
-//        cv::namedWindow("RoiSrcImg", 1);
+            //再显示一下看看，除了感兴趣的区域，其他部分都是黑色的了
+    //        cv::namedWindow("RoiSrcImg", 1);
+    #ifdef IMSHOW
+
+            imshow("9.2RoiSrcImg", RoiSrcImg);
+    #endif
+            //获取有效区域
+            auto target_rect =boundingRect((cv::Mat)contours[i]);
+            cv::Mat img_part = RoiSrcImg(target_rect);
+
+//            cv::Mat  kernel = (cv::Mat_<float>(3,3) << 0,-1,0,0,5,0,-1,0);
+//            cv::filter2D(img_part,img_part,CV_8UC3,kernel);
+            //基于伽马变换的图像增强
+            cv::Mat img_gamma(img_part.size(),CV_32FC3);
+            for(int i = 0; i < img_part.rows; ++i)
+            {
+                for(int j = 0; j < img_part.cols; ++j)
+                {
+                    img_gamma.at<cv::Vec3f>(i,j)[0] = (img_part.at<cv::Vec3b>(i, j)[0])*(img_part.at<cv::Vec3b>(i, j)[0])*(img_part.at<cv::Vec3b>(i, j)[0]);
+                    img_gamma.at<cv::Vec3f>(i,j)[1] = (img_part.at<cv::Vec3b>(i, j)[1])*(img_part.at<cv::Vec3b>(i, j)[1])*(img_part.at<cv::Vec3b>(i, j)[1]);
+                    img_gamma.at<cv::Vec3f>(i,j)[2] = (img_part.at<cv::Vec3b>(i, j)[2])*(img_part.at<cv::Vec3b>(i, j)[2])*(img_part.at<cv::Vec3b>(i, j)[2]);
+                }
+            }
+            //归一化到0~255
+            cv::normalize(img_gamma,img_gamma,0,255,CV_MINMAX);
+            //转换成8bit图像显示
+            cv::convertScaleAbs(img_gamma,img_gamma);
 #ifdef IMSHOW
-
-        imshow("9.2RoiSrcImg", RoiSrcImg);
+            imshow("9.2.0enhance", img_part);
 #endif
-        //获取有效区域
-        auto target_rect =boundingRect((cv::Mat)contours[i]);
-        cv::Mat img_part = RoiSrcImg(target_rect);
-#ifdef IMSHOW
+//    #ifdef IMSHOW
 
-        imshow("9.2.1_the_img_part",img_part);
-#endif
-        QString temp_pic_part_name;
-        temp_pic_part_name += temp_pic_path +"/";
-        temp_pic_part_name += QString::number(i) + "_part.jpg";
-        cv::imwrite(temp_pic_part_name.toLocal8Bit().data(),img_part);
-        cv::resize(img_part,img_part,cv::Size(img_part.cols*2,img_part.rows*2));
+//            imshow("9.2.1_the_img_part",img_part);
+//    #endif
+//    #ifdef IMWRITE
 
-        //创建一个旋转后的图像
-        cv::Mat RatationedImg(img_part.rows, img_part.cols, CV_8UC1);
-        RatationedImg.setTo(255);
-        //对RoiSrcImg进行旋转
-        cv::Point2f center = rect.center;  //中心点
-        qDebug() << "the center x:" << center.x << ";y:" << center.y;
-        //计算旋转加缩放的变换矩阵
-        cv::Mat M2 = getRotationMatrix2D(center, angle, 1);
-        //仿射变换
-        warpAffine(img_part, RatationedImg, M2, img_part.size(),1, 0, cv::Scalar(255,255,255));
-#ifdef IMSHOW
+//            QString temp_pic_part_name;
+//            temp_pic_part_name += temp_pic_path +"/";
+//            temp_pic_part_name += QString::number(i) + "_part.jpg";
+//            cv::imwrite(temp_pic_part_name.toLocal8Bit().data(),img_part);
+//    #endif
+////            cv::resize(img_part,img_part,cv::Size(img_part.cols*2,img_part.rows*2));
 
-        cv::imshow(QString::fromUtf8("9.3旋转之后").toLocal8Bit().data(), RatationedImg);
-#endif
-        //将矫正后的图片保存下来
-        QString temp_pic_name;
-        temp_pic_name += temp_pic_path + "/";
-        temp_pic_name += QString::number(i) +".jpg";
-        qDebug() << temp_pic_name;
-        cv::imwrite(temp_pic_name.toLocal8Bit().data(), RatationedImg);
+//            //创建一个旋转后的图像
+//            cv::Mat RatationedImg(img_part.rows, img_part.cols, CV_8UC1);
+//            RatationedImg.setTo(255);
+//            //对RoiSrcImg进行旋转
+//            cv::Point2f center = rect.center;  //中心点
+//            qDebug() << "the center x:" << center.x << ";y:" << center.y;
+//            //计算旋转加缩放的变换矩阵
+//            cv::Mat M2 = getRotationMatrix2D(center, angle, 1);
+//            //仿射变换
+//            warpAffine(img_part, RatationedImg, M2, img_part.size(),1, 0, cv::Scalar(255,255,255));
+//    #ifdef IMSHOW
 
-        qDebug("check begin!");
+//            cv::imshow(QString::fromUtf8("9.3旋转之后").toLocal8Bit().data(), RatationedImg);
+//    #endif
+//    #ifdef IMWRITE
+//            //将矫正后的图片保存下来
+//            QString temp_pic_name;
+//            temp_pic_name += temp_pic_path + "/";
+//            temp_pic_name += QString::number(i) +".jpg";
+//            qDebug() << temp_pic_name;
+//            cv::imwrite(temp_pic_name.toLocal8Bit().data(), RatationedImg);
+//    #endif
+            qDebug("check begin!");
 
-        //zbar开始
-        zbar::ImageScanner scan;
-        scan.set_config(zbar::ZBAR_NONE,zbar::ZBAR_CFG_ENABLE,1);
-        //构建zbar图像
-        cv::Mat img_gray;
-        cv::cvtColor(RatationedImg,img_gray,CV_RGB2GRAY);
-#ifdef IMSHOW
+            //zbar开始
+            zbar::ImageScanner scan;
+            scan.set_config(zbar::ZBAR_NONE,zbar::ZBAR_CFG_ENABLE,1);
+            //构建zbar图像
+            cv::Mat img_gray;
+            cv::cvtColor(img_gamma,img_gray,CV_RGB2GRAY);
+    #ifdef IMSHOW
 
-        cv::imshow("9.4ratation_gray",img_gray);
-#endif
-        qDebug() << "cols:" << img_gray.cols << ";rows:" << img_gray.rows;
-        uchar* raw_data = (uchar*)img_gray.data;
-        zbar::Image img_zbar(img_gray.cols,img_gray.rows,"Y800",raw_data,img_gray.cols * img_gray.rows);
-        //扫描
-        qDebug("scan begin!");
-        scan.scan(img_zbar);
-        zbar::Image::SymbolIterator symbol = img_zbar.symbol_begin();
-        if(img_zbar.symbol_begin() == img_zbar.symbol_end())
+            cv::imshow("9.4ratation_gray",img_gray);
+    #endif
+            qDebug() << "cols:" << img_gray.cols << ";rows:" << img_gray.rows;
+            uchar* raw_data = (uchar*)img_gray.data;
+            zbar::Image img_zbar(img_gray.cols,img_gray.rows,"Y800",raw_data,img_gray.cols * img_gray.rows);
+            //扫描
+            qDebug("scan begin!");
+            scan.scan(img_zbar);
+            zbar::Image::SymbolIterator symbol = img_zbar.symbol_begin();
+            if(img_zbar.symbol_begin() == img_zbar.symbol_end())
+            {
+                qDebug("check failed!");
+    //            return;
+            }
+            for(auto symbol = img_zbar.symbol_begin();symbol != img_zbar.symbol_end(); ++symbol)
+            {
+                qDebug() << "type:" << symbol->get_type_name().c_str();
+                qDebug() << "code:" << symbol->get_data().c_str();
+
+                QString the_data_to_write = "["+each_file_info.fileName() +"]->\t"+"type: ["+symbol->get_type_name().c_str() + "]\tcode: [" + symbol->get_data().c_str()+"]\t"+ QString::number(timer.elapsed()) + "ms\n";
+                log_file.write(the_data_to_write.toUtf8().data(),the_data_to_write.size());
+
+            }
+            img_zbar.set_data(nullptr,0);
+            qDebug() << i << "*******************************************";
+
+    //标出条形码区域的矩形边界
+            rectangle(image,target_rect,cv::Scalar(255),2);
+    #ifdef IMSHOW
+
+            cv::imshow(QString::fromUtf8("10.找出二维码矩形区域").toLocal8Bit().data(),image);
+    #endif
+
+            QImage img_to_show = cvMat2QImage(image);
+            ui->label->setScaledContents(true);
+            ui->label->setPixmap(QPixmap::fromImage(img_to_show));
+            if(img_zbar.symbol_begin() != img_zbar.symbol_end())
+            {
+                QString text_to_show = ui->label_2->text();
+                text_to_show += "type:";
+                text_to_show += symbol->get_type_name().c_str();
+                text_to_show += "\r\ncode:";
+                text_to_show += symbol->get_data().c_str();
+                text_to_show += "\r\n";
+                ui->label_2->setText(text_to_show);
+
+            }
+    #if 0
+        //10.通过findContours找到条形码区域的矩形边界
+        findContours(imageSobleOutThreshold,contours,hiera,CV_RETR_EXTERNAL,CV_CHAIN_APPROX_NONE);
+        for(int i=0;i<contours3.size();i++)
         {
-            qDebug("check failed!");
-//            return;
+            cv::Rect rect=boundingRect((cv::Mat)contours3[i]);
+            rectangle(image,rect,cv::Scalar(255),2);
         }
-        for(auto symbol = img_zbar.symbol_begin();symbol != img_zbar.symbol_end(); ++symbol)
-        {
-            qDebug() << "type:" << symbol->get_type_name().c_str();
-            qDebug() << "code:" << symbol->get_data().c_str();
-        }
-        img_zbar.set_data(nullptr,0);
-        qDebug() << i << "*******************************************";
-
-
-        rectangle(image,target_rect,cv::Scalar(255),2);
-#ifdef IMSHOW
-
         cv::imshow(QString::fromUtf8("10.找出二维码矩形区域").toLocal8Bit().data(),image);
-#endif
-
-        QImage img_to_show = cvMat2QImage(image);
-        ui->label->setScaledContents(true);
-        ui->label->setPixmap(QPixmap::fromImage(img_to_show));
-        if(img_zbar.symbol_begin() != img_zbar.symbol_end())
-        {
-            QString text_to_show = ui->label_2->text();
-            text_to_show += "type:";
-            text_to_show += symbol->get_type_name().c_str();
-            text_to_show += "\r\ncode:";
-            text_to_show += symbol->get_data().c_str();
-            text_to_show += "\r\n";
-            ui->label_2->setText(text_to_show);
-
+    #endif
         }
 
+    #if 0
+        //对ROI区域进行抠图
 
-#if 0
-    //10.通过findContours找到条形码区域的矩形边界
-    findContours(imageSobleOutThreshold,contours,hiera,CV_RETR_EXTERNAL,CV_CHAIN_APPROX_NONE);
-    for(int i=0;i<contours3.size();i++)
-    {
-        cv::Rect rect=boundingRect((cv::Mat)contours3[i]);
-        rectangle(image,rect,cv::Scalar(255),2);
-    }
-    cv::imshow(QString::fromUtf8("10.找出二维码矩形区域").toLocal8Bit().data(),image);
-#endif
-    }
+        //对旋转后的图片进行轮廓提取
+        std::vector<std::vector<cv::Point> > contours2;
+        cv::Mat raw = cv::imread("r.jpg");
+        cv::Mat SecondFindImg;
+        //SecondFindImg.setTo(0);
+        cvtColor(raw, SecondFindImg, cv::COLOR_BGR2GRAY);  //灰度化
+        threshold(SecondFindImg, SecondFindImg, 80, 200, CV_THRESH_BINARY);
+        findContours(SecondFindImg, contours2, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+        //cout << "sec contour:" << contours2.size() << endl;
 
-#if 0
-    //对ROI区域进行抠图
-
-    //对旋转后的图片进行轮廓提取
-    std::vector<std::vector<cv::Point> > contours2;
-    cv::Mat raw = cv::imread("r.jpg");
-    cv::Mat SecondFindImg;
-    //SecondFindImg.setTo(0);
-    cvtColor(raw, SecondFindImg, cv::COLOR_BGR2GRAY);  //灰度化
-    threshold(SecondFindImg, SecondFindImg, 80, 200, CV_THRESH_BINARY);
-    findContours(SecondFindImg, contours2, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
-    //cout << "sec contour:" << contours2.size() << endl;
-
-    for (int j = 0; j < contours2.size(); j++)
-    {
-        //这时候其实就是一个长方形了，所以获取rect
-        cv::Rect rect = boundingRect(cv::Mat(contours2[j]));
-        //面积太小的轮廓直接pass,通过设置过滤面积大小，可以保证只拿到外框
-        if (rect.area() < 600)
+        for (int j = 0; j < contours2.size(); j++)
         {
-            continue;
+            //这时候其实就是一个长方形了，所以获取rect
+            cv::Rect rect = boundingRect(cv::Mat(contours2[j]));
+            //面积太小的轮廓直接pass,通过设置过滤面积大小，可以保证只拿到外框
+            if (rect.area() < 600)
+            {
+                continue;
+            }
+            cv::Mat dstImg = raw(rect);
+            imshow("dst", dstImg);
         }
-        cv::Mat dstImg = raw(rect);
-        imshow("dst", dstImg);
-    }
-#endif
+    #endif
 
+    }
+
+
+    log_file.close();
 
 
 }
